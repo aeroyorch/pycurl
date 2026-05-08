@@ -27,11 +27,148 @@ warn_failed_to_acquire_thread(const char *warning_message)
 }
 
 PYCURL_INTERNAL void
-print_callback_error_if_regular_exception(void)
+pycurl_capture_callback_exception(PyObject **storage)
 {
-    if (PyErr_ExceptionMatches(PyExc_Exception)) {
-        PyErr_Print();
+    PyObject *type = NULL;
+    PyObject *value = NULL;
+    PyObject *tb = NULL;
+    PyObject *list;
+
+    if (!PyErr_Occurred()) {
+        return;
     }
+    /* Let BaseException-only types (KeyboardInterrupt, SystemExit,
+       GeneratorExit) propagate unchanged. */
+    if (!PyErr_ExceptionMatches(PyExc_Exception)) {
+        return;
+    }
+
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    if (value == NULL) {
+        Py_XDECREF(type);
+        Py_XDECREF(tb);
+        return;
+    }
+    if (tb != NULL) {
+        PyException_SetTraceback(value, tb);
+    }
+    Py_XDECREF(type);
+    Py_XDECREF(tb);
+
+    /* Lazy-allocate the list and append. Attach decides how to chain. */
+    list = *storage;
+    if (list == NULL) {
+        list = PyList_New(0);
+        if (list == NULL) {
+            /* OOM: drop the capture rather than poison the original error
+               indicator state of any concurrent operation. */
+            PyErr_Clear();
+            Py_DECREF(value);
+            return;
+        }
+        *storage = list;
+    }
+    if (PyList_Append(list, value) != 0) {
+        PyErr_Clear();
+    }
+    Py_DECREF(value);
+}
+
+PYCURL_INTERNAL void
+pycurl_attach_callback_cause(PyObject **storage)
+{
+    PyObject *list = *storage;
+    PyObject *cause = NULL;
+    PyObject *type = NULL;
+    PyObject *value = NULL;
+    PyObject *tb = NULL;
+    Py_ssize_t n;
+
+    *storage = NULL;
+    if (list == NULL) {
+        return;
+    }
+    n = PyList_GET_SIZE(list);
+    if (n == 0) {
+        Py_DECREF(list);
+        return;
+    }
+    /* No pending error means the callback exceptions were captured but the
+       libcurl operation succeeded anyway (e.g. DEBUGFUNCTION whose return
+       value is ignored). There is nothing to chain to, so drop them. */
+    if (!PyErr_Occurred()) {
+        Py_DECREF(list);
+        return;
+    }
+
+    /* Fetch the pending error first, so any Python call we make below
+       (e.g. BaseExceptionGroup constructor) does not see a stale
+       indicator. */
+    PyErr_Fetch(&type, &value, &tb);
+    PyErr_NormalizeException(&type, &value, &tb);
+    if (value == NULL) {
+        /* Normalization failed; restore whatever we have and drop list. */
+        PyErr_Restore(type, value, tb);
+        Py_DECREF(list);
+        return;
+    }
+
+    if (n == 1) {
+        cause = PyList_GET_ITEM(list, 0);
+        Py_INCREF(cause);
+        Py_DECREF(list);
+    } else {
+#if PY_VERSION_HEX >= 0x030B0000
+        /* PEP 654 group; constructor narrows to ExceptionGroup because
+           our capture filter rejects BaseException-only types. */
+        cause = PyObject_CallFunction(PyExc_BaseExceptionGroup, "sO",
+                                      "PycURL callback exceptions", list);
+        Py_DECREF(list);
+        if (cause == NULL) {
+            /* Group construction failed; restore the original error and
+               discard the captures. */
+            PyErr_Clear();
+            PyErr_Restore(type, value, tb);
+            return;
+        }
+#else
+        /* Python 3.10: no ExceptionGroup; first-wins. */
+        cause = PyList_GET_ITEM(list, 0);
+        Py_INCREF(cause);
+        Py_DECREF(list);
+#endif
+    }
+
+    if (tb != NULL) {
+        PyException_SetTraceback(value, tb);
+    }
+    PyException_SetCause(value, cause); /* steals cause */
+    PyErr_Restore(type, value, tb);     /* steals all three */
+}
+
+PYCURL_INTERNAL void
+pycurl_easy_clear_callback_state(struct CurlObject *self)
+{
+#ifdef HAVE_CURL_MIME
+    /* Drain any per-owner mime captures into the easy slot first, then
+       clear in one shot. */
+    curlmime_collect_callback_exceptions(self->mimepost_obj,
+                                         &self->callback_exception);
+#endif
+    Py_CLEAR(self->callback_exception);
+}
+
+PYCURL_INTERNAL void
+pycurl_easy_attach_callback_cause(struct CurlObject *self)
+{
+#ifdef HAVE_CURL_MIME
+    /* Pull any captured exception from mime data callbacks into the easy
+       handle's slot, then attach as __cause__ in the usual way. */
+    curlmime_collect_callback_exceptions(self->mimepost_obj,
+                                         &self->callback_exception);
+#endif
+    pycurl_attach_callback_cause(&self->callback_exception);
 }
 
 PYCURL_INTERNAL PyObject *
@@ -138,7 +275,7 @@ PYCURL_INTERNAL void
 create_and_set_error_object(CurlObject *self, int code)
 {
     PyObject *e;
-    
+
     self->error[sizeof(self->error) - 1] = 0;
     e = create_error_object(self, code);
     if (e != NULL) {

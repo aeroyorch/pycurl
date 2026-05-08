@@ -357,20 +357,46 @@ struct CurlObject;
 PYCURL_INTERNAL void
 create_and_set_error_object(struct CurlObject *self, int code);
 
+/* Capture a regular Exception subclass from the error indicator into
+   *storage. Leaves BaseException-only types (KeyboardInterrupt, SystemExit,
+   GeneratorExit) pending so they propagate unchanged. First-wins: if
+   *storage already holds an exception, the new one is dropped. */
+PYCURL_INTERNAL void
+pycurl_capture_callback_exception(PyObject **storage);
+
+/* If *storage is non-NULL and an error is currently set, attach the stored
+   exception as __cause__ of the pending exception. Always clears *storage. */
+PYCURL_INTERNAL void
+pycurl_attach_callback_cause(PyObject **storage);
+
+/* Easy-handle convenience: drain any captured exception from attached mime
+   owners into the easy slot, then attach as __cause__ of the pending error. */
+PYCURL_INTERNAL void
+pycurl_easy_attach_callback_cause(struct CurlObject *self);
+
+/* Easy-handle convenience: clear stale callback state at perform/pause entry
+   so it cannot become a __cause__ of a later, unrelated pycurl.error. */
+PYCURL_INTERNAL void
+pycurl_easy_clear_callback_state(struct CurlObject *self);
+
 
 /* Raise exception based on return value `res' and `self->error' */
 #define CURLERROR_RETVAL() do {\
     create_and_set_error_object((self), (int) (res)); \
+    pycurl_easy_attach_callback_cause(self); \
     return NULL; \
 } while (0)
 
-#define CURLERROR_SET_RETVAL() \
-    create_and_set_error_object((self), (int) (res));
+#define CURLERROR_SET_RETVAL() do {\
+    create_and_set_error_object((self), (int) (res)); \
+    pycurl_easy_attach_callback_cause(self); \
+} while (0)
 
 #define CURLERROR_RETVAL_MULTI_DONE() do {\
     PyObject *v; \
     v = Py_BuildValue("(i)", (int) (res)); \
     if (v != NULL) { PyErr_SetObject(ErrorObject, v); Py_DECREF(v); } \
+    pycurl_attach_callback_cause(&(self)->callback_exception); \
     goto done; \
 } while (0)
 
@@ -380,6 +406,7 @@ create_and_set_error_object(struct CurlObject *self, int code);
     PyObject *v; const char *m = (msg); \
     v = Py_BuildValue("(is)", (int) (res), (m)); \
     if (v != NULL) { PyErr_SetObject(ErrorObject, v); Py_DECREF(v); } \
+    pycurl_attach_callback_cause(&(self)->callback_exception); \
     return NULL; \
 } while (0)
 
@@ -507,6 +534,7 @@ typedef struct CurlObject {
     PyObject *ca_certs_obj;
     /* true while executing WRITEFUNCTION for this handle */
     int ws_write_cb_running;
+    PyObject *callback_exception;
     /* misc */
     char error[CURL_ERROR_SIZE+1];
 } CurlObject;
@@ -530,6 +558,7 @@ typedef struct CurlMultiObject {
 
     PyObject *easy_object_dict;
     int close_handles; /* boolean: False by default */
+    PyObject *callback_exception;
 } CurlMultiObject;
 
 typedef struct {
@@ -569,6 +598,8 @@ typedef struct CurlMimePartObject {
 
 PYCURL_INTERNAL void
 curlmime_duphandle_incref_data_cb_owners(PyObject *mime_obj);
+PYCURL_INTERNAL void
+curlmime_collect_callback_exceptions(PyObject *mime_obj, PyObject **storage);
 #endif
 
 PYCURL_INTERNAL PyThreadState *
@@ -612,9 +643,6 @@ check_pending_python_exception_or_signal(void);
 
 PYCURL_INTERNAL void
 warn_failed_to_acquire_thread(const char *warning_message);
-
-PYCURL_INTERNAL void
-print_callback_error_if_regular_exception(void);
 
 PYCURL_INTERNAL PyObject *
 do_global_init(PyObject *dummy, PyObject *args);

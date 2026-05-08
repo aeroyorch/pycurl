@@ -152,6 +152,40 @@ util_multi_xdecref(CurlMultiObject *self)
     Py_CLEAR(self->t_cb);
     Py_CLEAR(self->s_cb);
     Py_CLEAR(self->socket_object_dict);
+    Py_CLEAR(self->callback_exception);
+}
+
+
+/* Drop captured callback exceptions from every easy handle attached to this
+   multi. Easy-callback captures during multi.perform()/socket_action() have
+   no surfacing path through the multi (libcurl reports easy failures via
+   info_read, not as a CURLM_* error), so they are dropped at this boundary
+   to keep them from becoming a stale __cause__ on later easy CURLERROR_*. */
+static void
+util_multi_clear_easy_callback_states(CurlMultiObject *self)
+{
+    PyObject *key;
+    Py_ssize_t pos = 0;
+
+    if (!self->easy_object_dict) {
+        return;
+    }
+    /* easy_object_dict's keys are CurlObject pointers (see do_multi_add_handle).
+       PyDict_Next iterates without allocating a snapshot; safe here because
+       pycurl_easy_clear_callback_state does not mutate this dict. */
+    while (PyDict_Next(self->easy_object_dict, &pos, &key, NULL)) {
+        pycurl_easy_clear_callback_state((CurlObject *)key);
+    }
+}
+
+
+/* Clear the multi's own callback slot and drain attached easies'. Use this
+   at every entry/exit of a multi method that drives libcurl callbacks. */
+static void
+pycurl_multi_clear_callback_state(CurlMultiObject *self)
+{
+    Py_CLEAR(self->callback_exception);
+    util_multi_clear_easy_callback_states(self);
 }
 
 
@@ -277,6 +311,7 @@ do_multi_traverse(CurlMultiObject *self, visitproc visit, void *arg)
     VISIT(self->socket_object_dict);
     VISIT(self->t_cb);
     VISIT(self->s_cb);
+    VISIT(self->callback_exception);
 
     return 0;
 #undef VISIT
@@ -334,14 +369,14 @@ multi_socket_callback(CURL *easy,
     if (result == Py_None) {
         ret = 0;
     } else if (callback_return_value_to_int(result, "multi socket", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
 
 silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -385,14 +420,14 @@ multi_timer_callback(CURLM *multi,
     if (result == Py_None) {
         ret = 0;
     } else if (callback_return_value_to_int(result, "multi timer", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
 
 silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -751,17 +786,21 @@ do_multi_socket_action(CurlMultiObject *self, PyObject *args)
         return NULL;
     }
 
+    pycurl_multi_clear_callback_state(self);
+
     PYCURL_BEGIN_ALLOW_THREADS
     res = curl_multi_socket_action(self->multi_handle, socket, ev_bitmask, &running);
     PYCURL_END_ALLOW_THREADS
 
     if (check_pending_python_exception_or_signal() != 0) {
+        pycurl_multi_clear_callback_state(self);
         return NULL;
     }
 
     if (res != CURLM_OK) {
         CURLERROR_MSG("multi_socket_action failed");
     }
+    pycurl_multi_clear_callback_state(self);
     /* Return a tuple with the result and the number of running handles */
     return Py_BuildValue("(ii)", (int)res, running);
 }
@@ -782,6 +821,8 @@ do_multi_socket_all(CurlMultiObject *self, PyObject *Py_UNUSED(ignored))
         return NULL;
     }
 
+    pycurl_multi_clear_callback_state(self);
+
     PYCURL_BEGIN_ALLOW_THREADS
     PYCURL_IGNORE_DEPRECATED_BEGIN
     res = curl_multi_socket_all(self->multi_handle, &running);
@@ -789,6 +830,7 @@ do_multi_socket_all(CurlMultiObject *self, PyObject *Py_UNUSED(ignored))
     PYCURL_END_ALLOW_THREADS
 
     if (check_pending_python_exception_or_signal() != 0) {
+        pycurl_multi_clear_callback_state(self);
         return NULL;
     }
 
@@ -796,6 +838,7 @@ do_multi_socket_all(CurlMultiObject *self, PyObject *Py_UNUSED(ignored))
     if (res != CURLM_OK && res != CURLM_CALL_MULTI_PERFORM) {
         CURLERROR_MSG("perform failed");
     }
+    pycurl_multi_clear_callback_state(self);
 
     /* Return a tuple with the result and the number of running handles */
     return Py_BuildValue("(ii)", (int)res, running);
@@ -814,11 +857,14 @@ do_multi_perform(CurlMultiObject *self, PyObject *Py_UNUSED(ignored))
         return NULL;
     }
 
+    pycurl_multi_clear_callback_state(self);
+
     PYCURL_BEGIN_ALLOW_THREADS
     res = curl_multi_perform(self->multi_handle, &running);
     PYCURL_END_ALLOW_THREADS
 
     if (check_pending_python_exception_or_signal() != 0) {
+        pycurl_multi_clear_callback_state(self);
         return NULL;
     }
 
@@ -826,6 +872,7 @@ do_multi_perform(CurlMultiObject *self, PyObject *Py_UNUSED(ignored))
     if (res != CURLM_OK && res != CURLM_CALL_MULTI_PERFORM) {
         CURLERROR_MSG("perform failed");
     }
+    pycurl_multi_clear_callback_state(self);
 
     /* Return a tuple with the result and the number of running handles */
     return Py_BuildValue("(ii)", (int)res, running);
@@ -888,6 +935,9 @@ do_multi_add_handle(CurlMultiObject *self, PyObject *args)
     }
 
     assert(obj->multi_stack == NULL);
+
+    pycurl_multi_clear_callback_state(self);
+
     /* Allow threads because callbacks can be invoked */
     PYCURL_BEGIN_ALLOW_THREADS
     res = curl_multi_add_handle(self->multi_handle, obj->handle);
@@ -903,9 +953,11 @@ do_multi_add_handle(CurlMultiObject *self, PyObject *args)
         (void) curl_multi_remove_handle(self->multi_handle, obj->handle);
         PYCURL_END_ALLOW_THREADS
         (void) PyDict_DelItem(self->easy_object_dict, (PyObject *) obj);
+        pycurl_multi_clear_callback_state(self);
         return NULL;
     }
 
+    pycurl_multi_clear_callback_state(self);
     Py_RETURN_NONE;
 }
 
@@ -933,6 +985,9 @@ do_multi_remove_handle(CurlMultiObject *self, PyObject *args)
         PyErr_SetString(ErrorObject, "curl object not on this multi-stack");
         return NULL;
     }
+
+    pycurl_multi_clear_callback_state(self);
+
     /* Allow threads because callbacks can be invoked */
     PYCURL_BEGIN_ALLOW_THREADS
     res = curl_multi_remove_handle(self->multi_handle, obj->handle);
@@ -948,6 +1003,7 @@ do_multi_remove_handle(CurlMultiObject *self, PyObject *args)
     }
     assert(obj->multi_stack == self);
     easy_clear_multi_ref(obj, self);
+    pycurl_multi_clear_callback_state(self);
 done:
     Py_RETURN_NONE;
 }

@@ -31,55 +31,36 @@ The signature of each callback used in PycURL is documented below.
 Error Reporting
 ---------------
 
-PycURL callbacks are invoked as follows:
+Callbacks are invoked by libcurl. They should not raise exceptions on failure
+but return the failure value documented for each callback below.
 
-Python application -> ``perform()`` -> libcurl (C code) -> Python callback
-
-Because callbacks are invoked by libcurl, they should not raise exceptions
-on failure but instead return appropriate values indicating failure.
-The documentation for individual callbacks below specifies expected success and
-failure return values.
-
-Unhandled exceptions propagated out of Python callbacks will be intercepted
-by PycURL or the Python runtime. This will fail the callback with a
-generic failure status, in turn failing the ``perform()`` operation.
-A failing ``perform()`` will raise ``pycurl.error``, but the error code
-used depends on the specific callback.
-
-``KeyboardInterrupt`` and other ``BaseException`` subclasses (for example, ``SystemExit``)
-are handled specially: if they are raised inside a callback, they are preserved and re-raised
-to the caller instead of being converted into a ``pycurl.error``.
-
-Rich context information like exception objects can be stored in various ways,
-for example the following example stores OPENSOCKET callback exception on the
-Curl object::
-
-    import pycurl, random, socket
-
-    class ConnectionRejected(Exception):
-        pass
-
-    def opensocket(curl, purpose, curl_address):
-        # always fail
-        curl.exception = ConnectionRejected('Rejecting connection attempt in opensocket callback')
-        return pycurl.SOCKET_BAD
-
-        # the callback must create a socket if it does not fail,
-        # see examples/opensocketexception.py
-
-    c = pycurl.Curl()
-    c.setopt(c.URL, 'http://pycurl.io')
-    c.exception = None
-    c.setopt(c.OPENSOCKETFUNCTION,
-        lambda purpose, address: opensocket(c, purpose, address))
+Regular ``Exception`` subclasses raised inside a callback are caught: the
+callback returns its libcurl failure value, and PycURL attaches the original
+exception as the ``__cause__`` of the ``pycurl.error`` it raises from the
+driving call (``perform()``, ``multi.socket_action()``, etc.). The traceback
+is preserved::
 
     try:
         c.perform()
     except pycurl.error as e:
-        if e.args[0] == pycurl.E_COULDNT_CONNECT and c.exception:
-            print(c.exception)
-        else:
-            print(e)
+        if isinstance(e.__cause__, MyError):
+            ...
+
+If several callbacks raise during the same libcurl call, the captured
+exceptions are wrapped in an :class:`ExceptionGroup` (Python 3.11+) which
+becomes the ``__cause__``. On Python 3.10 the first captured exception is
+used directly.
+
+``KeyboardInterrupt``, ``SystemExit`` and other ``BaseException`` subclasses
+are not converted to ``pycurl.error`` — they propagate unchanged.
+
+``DEBUGFUNCTION``'s return value is ignored by libcurl, so an exception raised
+in it cannot abort the transfer on its own; it surfaces as ``__cause__`` only
+if another part of the same ``perform()`` also fails.
+
+Mime data callbacks (``READFUNCTION`` / ``SEEKFUNCTION`` on a ``CurlMimePart``)
+follow the same rule: their exceptions become the ``__cause__`` of the
+``pycurl.error`` raised by the easy handle driving the upload.
 
 
 WRITEFUNCTION
@@ -409,8 +390,8 @@ TIMERFUNCTION
     for the special values of ``timeout_ms``.
 
     Return ``0`` or ``None`` for success, or ``-1`` to abort all
-    in-progress transfers in the multi handle. Exceptions raised in the
-    callback are printed to stderr and treated as ``-1``.
+    in-progress transfers in the multi handle. An exception raised in the
+    callback is treated as ``-1``; see `Error Reporting`_.
 
     See ``examples/multi-socket_action-select.py`` for an example program
     that uses the timer function and the socket function.
@@ -442,8 +423,8 @@ SOCKETFUNCTION
     ``sock_fd``, or ``None`` if no value was assigned.
 
     Return ``0`` or ``None`` for success, or ``-1`` to abort all
-    in-progress transfers in the multi handle. Exceptions raised in the
-    callback are printed to stderr and treated as ``-1``.
+    in-progress transfers in the multi handle. An exception raised in the
+    callback is treated as ``-1``; see `Error Reporting`_.
 
     See ``examples/multi-socket_action-select.py`` for an example program
     that uses the timer function and the socket function.

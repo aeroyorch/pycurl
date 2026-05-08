@@ -12,17 +12,26 @@ do_curl_perform(CurlObject *self, PyObject *Py_UNUSED(ignored))
         return NULL;
     }
 
+    pycurl_easy_clear_callback_state(self);
+
     PYCURL_BEGIN_ALLOW_THREADS
     res = curl_easy_perform(self->handle);
     PYCURL_END_ALLOW_THREADS
 
     if (check_pending_python_exception_or_signal() != 0) {
+        /* A captured callback exception that didn't end up as __cause__ must
+           not survive into the next CURLERROR_* call on this handle. */
+        pycurl_easy_clear_callback_state(self);
         return NULL;
     }
 
     if (res != CURLE_OK) {
         CURLERROR_RETVAL();
     }
+    /* Drop any captured exceptions left over from callbacks whose return
+       value libcurl ignored (e.g. DEBUGFUNCTION) so they cannot become a
+       stale __cause__ on a later, unrelated pycurl.error. */
+    pycurl_easy_clear_callback_state(self);
     Py_RETURN_NONE;
 }
 
@@ -287,11 +296,13 @@ do_curl_pause_internal(CurlObject *self, int bitmask, const char *op_name)
     } else {
         saved_state = self->state;
     }
-    
+
+    pycurl_easy_clear_callback_state(self);
+
     /* We must allow threads here because unpausing a handle can cause
        some of its callbacks to be invoked immediately, from inside
        curl_easy_pause() */
-    
+
     PYCURL_BEGIN_ALLOW_THREADS_EASY
     res = curl_easy_pause(self->handle, bitmask);
     PYCURL_END_ALLOW_THREADS_EASY
@@ -304,14 +315,21 @@ do_curl_pause_internal(CurlObject *self, int bitmask, const char *op_name)
     }
 
     if (check_pending_python_exception_or_signal() != 0) {
+        pycurl_easy_clear_callback_state(self);
         return NULL;
     }
 
     if (res != CURLE_OK) {
-        CURLERROR_MSG("pause/unpause failed");
-    } else {
-        Py_RETURN_NONE;
+        PyObject *v = Py_BuildValue("(is)", (int)res, "pause/unpause failed");
+        if (v != NULL) {
+            PyErr_SetObject(ErrorObject, v);
+            Py_DECREF(v);
+        }
+        pycurl_easy_attach_callback_cause(self);
+        return NULL;
     }
+    pycurl_easy_clear_callback_state(self);
+    Py_RETURN_NONE;
 }
 
 

@@ -253,34 +253,56 @@ def test_callbacks_non_minus_one_return_continues_transfer(
     assert ok and not err
 
 
+# Callback abort-paths that don't raise a Python exception: -1 returns set
+# no cause; pycurl.error.__cause__ must be None.
 @pytest.mark.parametrize(
-    "socket_cb,timer_cb,expected_stderr",
+    "socket_cb,timer_cb",
     [
-        (lambda *_: -1, _ok, None),
-        (_ok, lambda _: -1, None),
-        (_raises_runtime, _ok, "boom"),
-        (_ok, _raises_runtime, "boom"),
-        (lambda *_: "not an int", _ok, "is not an integer"),
+        (lambda *_: -1, _ok),
+        (_ok, lambda _: -1),
     ],
-    ids=[
-        "socket_returns_-1",
-        "timer_returns_-1",
-        "socket_raises",
-        "timer_raises",
-        "socket_invalid_type",
-    ],
+    ids=["socket_returns_-1", "timer_returns_-1"],
 )
-def test_callbacks_failure_aborts_transfer(
-    install_callbacks, capfd, socket_cb, timer_cb, expected_stderr
+def test_callbacks_minus_one_return_aborts_with_no_cause(
+    install_callbacks, socket_cb, timer_cb
 ):
     easy, multi, _ = install_callbacks(socket_cb, timer_cb)
-    with pytest.raises(pycurl.error):
+    with pytest.raises(pycurl.error) as excinfo:
         multi.add_handle(easy)
         multi.socket_action(pycurl.SOCKET_TIMEOUT, 0)
+    assert excinfo.value.__cause__ is None
 
-    if expected_stderr is not None:
-        captured = capfd.readouterr()
-        assert expected_stderr in captured.err
+
+# Callback raises Python exception: pycurl.error.__cause__ is the original.
+@pytest.mark.parametrize(
+    "socket_cb,timer_cb",
+    [
+        (_raises_runtime, _ok),
+        (_ok, _raises_runtime),
+    ],
+    ids=["socket_raises", "timer_raises"],
+)
+def test_callbacks_raising_exception_chained_as_cause(
+    install_callbacks, socket_cb, timer_cb
+):
+    easy, multi, _ = install_callbacks(socket_cb, timer_cb)
+    with pytest.raises(pycurl.error) as excinfo:
+        multi.add_handle(easy)
+        multi.socket_action(pycurl.SOCKET_TIMEOUT, 0)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "boom"
+
+
+# Non-integer return is reported via stderr by callback_return_value_to_int
+# (no Python exception is set), so there is no __cause__ to chain.
+def test_callback_invalid_return_reported_via_stderr(install_callbacks, capfd):
+    easy, multi, _ = install_callbacks(lambda *_: "not an int", _ok)
+    with pytest.raises(pycurl.error) as excinfo:
+        multi.add_handle(easy)
+        multi.socket_action(pycurl.SOCKET_TIMEOUT, 0)
+    assert excinfo.value.__cause__ is None
+    captured = capfd.readouterr()
+    assert "is not an integer" in captured.err
 
 
 # (mid-transfer) easy.close() must call SOCKETFUNCTION to remove sockets

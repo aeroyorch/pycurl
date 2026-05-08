@@ -12,6 +12,7 @@ typedef struct CurlMimeDataCbOwner {
     PyObject *seek_cb;
     PyObject *free_cb;
     PyObject *userdata;
+    PyObject *callback_exception;
     Py_ssize_t shared_refcount;
     int free_called;
 } CurlMimeDataCbOwner;
@@ -80,6 +81,7 @@ curlmime_data_cb_owner_traverse(CurlMimeDataCbOwner *self, visitproc visit, void
     VISIT(self->seek_cb);
     VISIT(self->free_cb);
     VISIT(self->userdata);
+    VISIT(self->callback_exception);
 
     return 0;
 #undef VISIT
@@ -92,6 +94,7 @@ curlmime_data_cb_owner_clear(CurlMimeDataCbOwner *self)
     Py_CLEAR(self->seek_cb);
     Py_CLEAR(self->free_cb);
     Py_CLEAR(self->userdata);
+    Py_CLEAR(self->callback_exception);
     return 0;
 }
 
@@ -127,6 +130,7 @@ curlmime_data_cb_owner_new(PyObject *read_cb, PyObject *seek_cb, PyObject *free_
     owner->seek_cb = NULL;
     owner->free_cb = NULL;
     owner->userdata = NULL;
+    owner->callback_exception = NULL;
     owner->shared_refcount = 0;
     owner->free_called = 0;
 
@@ -341,7 +345,7 @@ done:
     return ret;
 
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&owner->callback_exception);
     goto done;
 }
 
@@ -422,7 +426,7 @@ done:
     return ret;
 
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&owner->callback_exception);
     goto done;
 }
 
@@ -1277,6 +1281,72 @@ curlmime_duphandle_incref_data_cb_owners(PyObject *mime_obj)
     }
 
     curlmime_duphandle_incref_data_cb_owners_recursive((CurlMimeObject *)mime_obj);
+}
+
+/* Drain every per-owner capture list into *storage. The first owner's
+   list is stolen wholesale; subsequent owners' items are appended. */
+static void
+curlmime_collect_callback_exceptions_recursive(CurlMimeObject *mime, PyObject **storage)
+{
+    Py_ssize_t i, j;
+    Py_ssize_t len, src_len;
+
+    if (mime == NULL) {
+        return;
+    }
+
+    if (mime->data_cb_owners != NULL) {
+        len = PyList_GET_SIZE(mime->data_cb_owners);
+        for (i = 0; i < len; i++) {
+            PyObject *owner_obj = PyList_GET_ITEM(mime->data_cb_owners, i);
+            if (PyObject_TypeCheck(owner_obj, &CurlMimeDataCbOwner_Type)) {
+                CurlMimeDataCbOwner *owner = (CurlMimeDataCbOwner *)owner_obj;
+                PyObject *src = owner->callback_exception;
+                if (src == NULL) {
+                    continue;
+                }
+                if (*storage == NULL) {
+                    /* Steal the entire list. */
+                    *storage = src;
+                    owner->callback_exception = NULL;
+                } else {
+                    /* Append every captured exception. */
+                    src_len = PyList_GET_SIZE(src);
+                    for (j = 0; j < src_len; j++) {
+                        PyObject *exc = PyList_GET_ITEM(src, j);
+                        if (PyList_Append(*storage, exc) != 0) {
+                            PyErr_Clear();
+                            break;
+                        }
+                    }
+                    Py_CLEAR(owner->callback_exception);
+                }
+            }
+        }
+    }
+
+    if (mime->submimes != NULL) {
+        len = PyList_GET_SIZE(mime->submimes);
+        for (i = 0; i < len; i++) {
+            PyObject *submime_obj = PyList_GET_ITEM(mime->submimes, i);
+            if (PyObject_TypeCheck(submime_obj, p_CurlMime_Type)) {
+                curlmime_collect_callback_exceptions_recursive(
+                    (CurlMimeObject *)submime_obj, storage);
+            }
+        }
+    }
+}
+
+PYCURL_INTERNAL void
+curlmime_collect_callback_exceptions(PyObject *mime_obj, PyObject **storage)
+{
+    if (mime_obj == NULL || storage == NULL) {
+        return;
+    }
+    if (!PyObject_TypeCheck(mime_obj, p_CurlMime_Type)) {
+        return;
+    }
+    curlmime_collect_callback_exceptions_recursive((CurlMimeObject *)mime_obj, storage);
 }
 
 static PyMethodDef curlmimeobject_methods[] = {

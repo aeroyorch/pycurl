@@ -3,9 +3,9 @@
 
 import os.path
 import pycurl
-import sys
 import unittest
 import urllib.request
+
 
 class WriteAbortTest(unittest.TestCase):
     def setUp(self):
@@ -15,7 +15,7 @@ class WriteAbortTest(unittest.TestCase):
         self.curl.close()
 
     def write_cb_returning_string(self, data):
-        return 'foo'
+        return "foo"
 
     def write_cb_returning_float(self, data):
         return 0.5
@@ -28,20 +28,18 @@ class WriteAbortTest(unittest.TestCase):
 
     def check(self, write_cb):
         # download the script itself through the file:// protocol into write_cb
-        url = 'file:' + urllib.request.pathname2url(os.path.abspath(__file__))
+        url = "file:" + urllib.request.pathname2url(os.path.abspath(__file__))
         self.curl.setopt(pycurl.URL, url)
         self.curl.setopt(pycurl.WRITEFUNCTION, write_cb)
         try:
             self.curl.perform()
 
-            self.fail('Should not get here')
-        except pycurl.error:
-            err, msg = sys.exc_info()[1].args
+            self.fail("Should not get here")
+        except pycurl.error as e:
+            err, msg = e.args
             # we expect pycurl.E_WRITE_ERROR as the response
             assert pycurl.E_WRITE_ERROR == err
-
-        # actual error
-        assert hasattr(sys, 'last_type')
-        self.assertEqual(pycurl.error, sys.last_type)
-        assert hasattr(sys, 'last_value')
-        self.assertEqual('write callback must return int or None', str(sys.last_value))
+            # the underlying "must return int or None" error is now exposed
+            # as __cause__ rather than via sys.last_*
+            assert isinstance(e.__cause__, pycurl.error)
+            assert "write callback must return int or None" in str(e.__cause__)

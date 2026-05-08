@@ -95,7 +95,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -197,7 +197,7 @@ opensocket_callback(void *clientp, curlsocktype purpose,
     PYCURL_DECLARE_THREAD_STATE;
 
     self = (CurlObject *)clientp;
-    
+
     PYCURL_BEGIN_CALLBACK(opensocket_callback, ret);
 
     converted_address = convert_protocol_address(&address->addr, address->addrlen);
@@ -278,7 +278,7 @@ done:
     Py_XDECREF(fileno_result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -310,7 +310,7 @@ sockopt_cb(void *clientp, curl_socket_t curlfd, curlsocktype purpose)
     ret_obj = PyObject_Call(self->sockopt_cb, arglist, NULL);
     Py_DECREF(arglist);
     if (callback_return_value_to_int(ret_obj, "sockopt", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -320,7 +320,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -353,7 +353,7 @@ closesocket_callback(void *clientp, curl_socket_t curlfd)
     ret_obj = PyObject_Call(self->closesocket_cb, arglist, NULL);
     Py_DECREF(arglist);
     if (callback_return_value_to_int(ret_obj, "closesocket", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -363,7 +363,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -429,7 +429,7 @@ ssh_key_cb(CURL *easy, const struct curl_khkey *knownkey,
     ret_obj = PyObject_Call(self->ssh_key_cb, arglist, NULL);
     Py_DECREF(arglist);
     if (callback_return_value_to_int(ret_obj, "ssh key", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -441,7 +441,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -513,7 +513,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -625,7 +625,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -673,7 +673,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -725,7 +725,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -771,7 +771,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -821,7 +821,7 @@ silent_error:
     Py_XDECREF(result);
     PYCURL_END_CALLBACK((curlioerr) ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -916,7 +916,7 @@ ssl_ctx_callback(CURL *curl, void *ssl_ctx, void *ptr)
                          PyBytes_GET_SIZE(self->ca_certs_obj));
 
     if (r != 0)
-        print_callback_error_if_regular_exception();
+        pycurl_capture_callback_exception(&self->callback_exception);
 
     PYCURL_END_CALLBACK(r == 0 ? CURLE_OK : CURLE_FAILED_INIT);
 }
@@ -945,7 +945,7 @@ prereq_callback(void *clientp, char *conn_primary_ip, char *conn_local_ip,
     ret_obj = PyObject_Call(self->prereq_cb, arglist, NULL);
     Py_DECREF(arglist);
     if (callback_return_value_to_int(ret_obj, "prereq", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -955,7 +955,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -983,7 +983,7 @@ fnmatch_callback(void *clientp, const char *pattern, const char *string)
     ret_obj = PyObject_Call(self->fnmatch_cb, arglist, NULL);
     Py_DECREF(arglist);
     if (callback_return_value_to_int(ret_obj, "fnmatch", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -993,7 +993,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -1022,7 +1022,7 @@ resolver_start_callback(void *resolver_state, void *reserved, void *clientp)
     if (ret_obj == Py_None) {
         ret = 0;
     } else if (callback_return_value_to_int(ret_obj, "resolver_start", &ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     goto done;
 
@@ -1032,7 +1032,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -1088,7 +1088,7 @@ done:
     PYCURL_END_CALLBACK(ret);
 verbose_error:
     *list = NULL;
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
@@ -1248,7 +1248,7 @@ hstswrite_callback(CURL *easy, struct curl_hstsentry *e,
         goto done;
     }
     if (callback_return_value_to_int(ret_obj, "hstswrite", &raw_ret) != 0) {
-        goto silent_error;
+        goto verbose_error;
     }
     if (raw_ret < 0 || raw_ret > CURLSTS_FAIL) {
         PyErr_SetString(ErrorObject, "hstswrite callback returned an invalid CURLSTScode");
@@ -1267,7 +1267,7 @@ done:
 verbose_error:
     Py_XDECREF(expire_obj);
     Py_XDECREF(arglist);
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 
@@ -1352,7 +1352,7 @@ done:
     Py_XDECREF(ret_obj);
     PYCURL_END_CALLBACK(ret);
 verbose_error:
-    print_callback_error_if_regular_exception();
+    pycurl_capture_callback_exception(&self->callback_exception);
     goto silent_error;
 }
 #endif
